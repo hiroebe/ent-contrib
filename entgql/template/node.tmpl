@@ -135,7 +135,7 @@ type NodeOption func(*nodeOptions)
 // WithNodeType sets the node Type resolver function (i.e. the table to query).
 // If was not provided, the table will be derived from the universal-id
 // configuration as described in: https://entgo.io/docs/migrate/#universal-ids.
-func WithNodeType(f func(context.Context, {{ $idType }}) (string, error)) NodeOption {
+func WithNodeType(f func(context.Context, {{ $idType }}) (string, {{ $idType }}, error)) NodeOption {
 	return func(o *nodeOptions) {
 		o.nodeType = f
 	}
@@ -143,13 +143,13 @@ func WithNodeType(f func(context.Context, {{ $idType }}) (string, error)) NodeOp
 
 // WithFixedNodeType sets the Type of the node to a fixed value.
 func WithFixedNodeType(t string) NodeOption {
-	return WithNodeType(func(context.Context, {{ $idType }}) (string, error) {
-		return t, nil
+	return WithNodeType(func(ctx context.Context, nodeID {{ $idType }}) (string, {{ $idType }}, error) {
+		return t, nodeID, nil
 	})
 }
 
 type nodeOptions struct {
-	nodeType func(context.Context, {{ $idType }}) (string, error)
+	nodeType func(context.Context, {{ $idType }}) (table string, id {{ $idType }}, err error)
 }
 
 func (c *Client) newNodeOpts(opts []NodeOption) *nodeOptions {
@@ -158,11 +158,11 @@ func (c *Client) newNodeOpts(opts []NodeOption) *nodeOptions {
 		opt(nopts)
 	}
 	if nopts.nodeType == nil {
-		nopts.nodeType = func(ctx context.Context, id {{ $idType }}) (string, error) {
+		nopts.nodeType = func(ctx context.Context, nodeID {{ $idType }}) (table string, id {{ $idType }}, err error) {
 			{{- if $idType.Numeric }}
-				return c.tables.nodeType(ctx, c.driver, id)
+				return c.tables.nodeType(ctx, c.driver, nodeID)
 			{{- else }}
-				return "", fmt.Errorf("cannot resolve noder (%v) without its type", id)
+				return table, id, fmt.Errorf("cannot resolve noder (%v) without its type", nodeID)
 			{{- end }}
 		}
 	}
@@ -175,13 +175,13 @@ func (c *Client) newNodeOpts(opts []NodeOption) *nodeOptions {
 //		c.Noder(ctx, id)
 //		c.Noder(ctx, id, ent.WithNodeType(typeResolver))
 //
-func (c *Client) Noder(ctx context.Context, id {{ $idType }}, opts ...NodeOption) (_ Noder, err error) {
+func (c *Client) Noder(ctx context.Context, nodeID {{ $idType }}, opts ...NodeOption) (_ Noder, err error) {
 	defer func() {
 		if IsNotFound(err) {
-			err = multierror.Append(err, entgql.ErrNodeNotFound(id))
+			err = multierror.Append(err, entgql.ErrNodeNotFound(nodeID))
 		}
 	}()
-	table, err := c.newNodeOpts(opts).nodeType(ctx, id)
+	table, id, err := c.newNodeOpts(opts).nodeType(ctx, nodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -218,10 +218,10 @@ func (c *Client) noder(ctx context.Context, table string, id {{ $idType }}) (Nod
 	}
 }
 
-func (c *Client) Noders(ctx context.Context, ids []{{ $idType }}, opts ...NodeOption) ([]Noder, error) {
-	switch len(ids) {
+func (c *Client) Noders(ctx context.Context, nodeIDs []{{ $idType }}, opts ...NodeOption) ([]Noder, error) {
+	switch len(nodeIDs) {
 	case 1:
-		noder, err := c.Noder(ctx, ids[0], opts...)
+		noder, err := c.Noder(ctx, nodeIDs[0], opts...)
 		if err != nil {
 			return nil, err
 		}
@@ -230,13 +230,13 @@ func (c *Client) Noders(ctx context.Context, ids []{{ $idType }}, opts ...NodeOp
 		return []Noder{}, nil
 	}
 
-	noders := make([]Noder, len(ids))
-	errors := make([]error, len(ids))
+	noders := make([]Noder, len(nodeIDs))
+	errors := make([]error, len(nodeIDs))
 	tables := make(map[string][]{{ $idType }})
-	id2idx := make(map[{{ $idType }}][]int, len(ids))
+	id2idx := make(map[{{ $idType }}][]int, len(nodeIDs))
 	nopts := c.newNodeOpts(opts)
-	for i, id := range ids {
-		table, err := nopts.nodeType(ctx, id)
+	for i, nodeID := range nodeIDs {
+		table, id, err := nopts.nodeType(ctx, nodeID)
 		if err != nil {
 			errors[i] = err
 			continue
@@ -262,7 +262,7 @@ func (c *Client) Noders(ctx context.Context, ids []{{ $idType }}, opts ...NodeOp
 		}
 	}
 
-	for i, id := range ids {
+	for i, id := range nodeIDs {
 		if errors[i] == nil {
 			if noders[i] != nil {
 				continue
@@ -329,16 +329,16 @@ func (c *Client) noders(ctx context.Context, table string, ids []{{ $idType }}) 
 		value atomic.Value
 	}
 
-	func (t *tables) nodeType(ctx context.Context, drv dialect.Driver, id {{ $idType }}) (string, error) {
+	func (t *tables) nodeType(ctx context.Context, drv dialect.Driver, nodeID {{ $idType }}) (table string, id {{ $idType }}, error) {
 		tables, err := t.Load(ctx, drv)
 		if err != nil {
-			return "", err
+			return table, id, err
 		}
-		idx := int(id/(1<<32 - 1))
+		idx := int(nodeID/(1<<32 - 1))
 		if idx < 0 || idx >= len(tables) {
-			return "", fmt.Errorf("cannot resolve table from id %v: %w", id, errNodeInvalidID)
+			return "", fmt.Errorf("cannot resolve table from id %v: %w", nodeID, errNodeInvalidID)
 		}
-		return tables[idx], nil
+		return tables[idx], nodeID, nil
 	}
 
 	func (t *tables) Load(ctx context.Context, drv dialect.Driver) ([]string, error) {
