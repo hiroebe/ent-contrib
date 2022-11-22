@@ -266,22 +266,17 @@ func limitRows(partitionBy string, limit int, orderBy ...sql.Querier) func(s *sq
 	return func(s *sql.Selector) {
 		d := sql.Dialect(s.Dialect())
 		s.SetDistinct(false)
-		with := d.With("src_query").
-			As(s.Clone()).
-			With("limited_query").
-			As(
-				d.Select("*").
+		srcQuery := s.Clone().As("src_query")
+		limitedQuery := d.Select("*").
 					AppendSelectExprAs(
 						sql.RowNumber().PartitionBy(partitionBy).OrderExpr(orderBy...),
 						"row_number",
 					).
-					From(d.Table("src_query")),
-			)
-		t := d.Table("limited_query").As(s.TableName())
+					From(srcQuery).
+					As("limited_query")
 		*s = *d.Select(s.UnqualifiedColumns()...).
-			From(t).
-			Where(sql.LTE(t.C("row_number"), limit)).
-			Prefix(with)
+			From(limitedQuery).
+			Where(sql.LTE(limitedQuery.C("row_number"), limit))
 	}
 }
 {{ end }}
